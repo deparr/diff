@@ -29,17 +29,19 @@ pub const DiffAction = union(enum) {
     traversal: Traverse,
 };
 
-pub const DiffActionList = std.ArrayList(DiffAction);
-
 const DiffBuilder = struct {
     allocator: Allocator,
-    list: DiffActionList,
+    list: std.ArrayList(DiffAction),
 
     fn init(allocator: Allocator) !DiffBuilder {
         return .{
             .allocator = allocator,
             .list = try .initCapacity(allocator, 16),
         };
+    }
+
+    fn deinit(self: *DiffBuilder) void {
+        self.list.deinit();
     }
 
     fn pushTraversal(self: *DiffBuilder, a_idx: usize, b_idx: usize) !void {
@@ -162,12 +164,41 @@ pub const MyersTrace = struct {
     }
 };
 
-pub fn diff(gpa: Allocator, a: []const u8, b: []const u8) !DiffActionList {
-    const max_dist = a.len + b.len;
+pub fn diff_str(gpa: Allocator, a: []const u8, b: []const u8) ![]DiffAction {
+    return diff(u8, gpa, a, b);
+}
 
+/// Computes the sequence of actions that, when applied to `a`, result in `b`
+/// Caller owns returned slice
+///
+/// `T` must be comparable for equality
+/// structs, enums, and unions, must expose a `fn equal(x: T, y: T) bool`
+pub fn diff(comptime T: type, gpa: Allocator, a: []const T, b: []const T) ![]DiffAction {
+    const equalFn = switch (@typeInfo(T)) {
+        .int => struct {
+            fn inner(x: anytype, y: anytype) bool {
+                return x == y;
+            }
+        }.inner,
+        .@"struct", .@"enum", .@"union" => blk: {
+            if (std.meta.hasMethod(T, "equal")) {
+                break :blk struct {
+                    fn inner(x: T, y: T) bool {
+                        return x.equal(y);
+                    }
+                }.inner;
+            } else {
+                @compileError("diff: structs, enums, and unions must expose `fn equal(x: T, y: T) bool`");
+            }
+        },
+        .float => @compileError("diff: cannot diff floats, must be Eq"),
+        else => @compileError("diff: unsupported type " ++ @typeName(T)),
+    };
+
+    const max_dist = a.len + b.len;
     if (max_dist == 0) {
-        var res: DiffActionList = try .initCapacity(gpa, 1);
-        res.appendAssumeCapacity(.{ .traversal = .{ .a_idx = 0, .b_idx = 0, .length = 0 } });
+        const res = try gpa.alloc(DiffAction, 1);
+        res[0] = .{ .traversal = .{ .a_idx = 0, .b_idx = 0, .length = 0 } };
         return res;
     }
 
@@ -198,7 +229,7 @@ pub fn diff(gpa: Allocator, a: []const u8, b: []const u8) !DiffActionList {
 
             assert(x >= 0);
             assert(y >= 0);
-            while (x < a_len_i32 and y < b_len_i32 and a[@intCast(x)] == b[@intCast(y)]) {
+            while (x < a_len_i32 and y < b_len_i32 and equalFn(a[@intCast(x)], b[@intCast(y)])) {
                 x += 1;
                 y += 1;
             }
@@ -214,10 +245,11 @@ pub fn diff(gpa: Allocator, a: []const u8, b: []const u8) !DiffActionList {
     }
 
     var builder: DiffBuilder = try .init(gpa);
+    defer builder.deinit();
     var x: i32 = @intCast(a.len);
     var y: i32 = @intCast(b.len);
 
-    // todo isn't his the same as breaking above?
+    // todo isn't this the same as breaking above?
     // d = min_edit_distance;
     // backtrack through the trace to build the diff
     while (d >= 0) : (d -= 1) {
@@ -262,18 +294,57 @@ pub fn diff(gpa: Allocator, a: []const u8, b: []const u8) !DiffActionList {
     }
 
     std.mem.reverse(DiffAction, builder.list.items);
-    return builder.list;
+    return try builder.list.toOwnedSlice();
 }
 
-test "diff_same" {
-    const actions = try diff(std.testing.allocator, "ABCDEF", "ABCDEF");
-    defer actions.deinit();
+fn expectEqualActions(expected: []const DiffAction, actual: []const DiffAction) !void {
+    try std.testing.expectEqual(expected.len, actual.len);
+    for (expected, actual) |expected_action, action|
+        try std.testing.expectEqualDeep(expected_action, action);
+}
 
-    try std.testing.expect(actions.items.len == 1);
-    const action = actions.items[0];
-    try std.testing.expectEqualDeep(action, DiffAction{ .traversal = .{
-        .a_idx = 0,
-        .b_idx = 0,
-        .length = 6,
-    } });
+test "diff same" {
+    const actions = try diff_str(std.testing.allocator, "ABCDEF", "ABCDEF");
+    defer std.testing.allocator.free(actions);
+
+    const expected = &[_]DiffAction{.{ .traversal = .{ .a_idx = 0, .b_idx = 0, .length = 6 } }};
+    try expectEqualActions(expected, actions);
+}
+
+test "diff int" {
+    const a = [_]u32{ 1, 2, 3, 4, 6 };
+    const b = [_]u32{ 1, 2, 4, 5, 6 };
+    const actions = try diff(u32, std.testing.allocator, &a, &b);
+    defer std.testing.allocator.free(actions);
+
+    const expected_actions = &[_]DiffAction{
+        .{ .traversal = .{ .a_idx = 0, .b_idx = 0, .length = 2 } },
+        .{ .deletion = .{ .a_idx = 2, .length = 1 } },
+        .{ .traversal = .{ .a_idx = 3, .b_idx = 2, .length = 1 } },
+        .{ .insertion = .{ .b_idx = 3, .length = 1 } },
+        .{ .traversal = .{ .a_idx = 4, .b_idx = 4, .length = 1 } },
+    };
+
+    try expectEqualActions(expected_actions, actions);
+}
+
+test "diff struct" {
+    const S = struct {
+        x: i32,
+        pub fn order(self: @This(), other: @This()) std.math.Order {
+            return std.math.order(self.x, other.x);
+        }
+    };
+
+    const a = [_]S{ .{ .x = 1 }, .{ .x = 2 } };
+    const b = [_]S{ .{ .x = 1 }, .{ .x = 2 }, .{ .x = 3 } };
+    const actions = try diff(S, std.testing.allocator, &a, &b);
+    defer std.testing.allocator.free(actions);
+
+    const expected_actions = &[_]DiffAction{
+        .{ .traversal = .{ .a_idx = 0, .b_idx = 0, .length = 2 } },
+        .{ .insertion = .{ .b_idx = 2, .length = 1 } },
+    };
+
+    try expectEqualActions(expected_actions, actions);
 }

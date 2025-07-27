@@ -25,7 +25,7 @@ pub fn main() !void {
     for (a_lines, b_lines) |a_line, b_line| {
         std.debug.print("diffing <<<< {s}\n", .{ a_line });
         std.debug.print("diffing >>>> {s}\n", .{ b_line });
-        const line_diff = try diff.diff(gpa, a_line, b_line);
+        const line_diff = try diff.diff_str(gpa, a_line, b_line);
         defer line_diff.deinit();
 
         for (line_diff.items) |action| {
