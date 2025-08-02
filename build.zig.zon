@@ -1,0 +1,10 @@
+.{
+    .name = .zdiff,
+    .version = "0.1.0",
+    .fingerprint = 0x117497c46a44b1d7,
+    .paths = .{
+        "src/diff.zig",
+        "build.zig",
+        "build.zig.zon",
+    },
+}
