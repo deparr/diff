@@ -18,12 +18,41 @@ pub const Traverse = struct {
     length: usize,
 };
 
+pub const Line = struct {
+    bytes: []const u8,
+
+    pub fn equal(self: Line, other: Line) bool {
+        return std.mem.eql(u8, self.bytes, other.bytes);
+    }
+
+};
+
+/// splits given string into `DiffLines`
+/// caller owns returned memory
+///
+/// TODO: kinda not great, lots of allocs + split memory
+/// TODO: handle \r\n line endings
+pub fn splitString(gpa: Allocator, str: []const u8) ![]Line {
+    const line_count = std.mem.count(u8, str, "\n") + 1;
+    const line_slice = try gpa.alloc(Line, line_count);
+    errdefer gpa.free(line_slice);
+
+    var iter = std.mem.splitScalar(u8, str, '\n');
+    var i: usize = 0;
+    while (iter.next()) |line| {
+        const line_copy = try gpa.dupe(u8, line);
+        line_slice[i] = .{ .bytes = line_copy };
+        i += 1;
+    }
+
+    return line_slice;
+}
+
 /// Tracks:
 ///     insertions from `b`
 ///     removals from `a`
 ///     traversals, no changes made to `a`
 pub const DiffAction = union(enum) {
-    /// an insertion into a
     insertion: Insertion,
     deletion: Deletion,
     traversal: Traverse,
@@ -164,8 +193,16 @@ pub const MyersTrace = struct {
     }
 };
 
-pub fn diff_str(gpa: Allocator, a: []const u8, b: []const u8) ![]DiffAction {
+/// computes a character-wise diff from `a` to `b`
+/// caller owns returned memory
+pub fn diffString(gpa: Allocator, a: []const u8, b: []const u8) ![]DiffAction {
     return diff(u8, gpa, a, b);
+}
+
+/// computes a line-wise diff from `a` to `b`
+/// caller owns returned memory
+pub fn diffLines(gpa: Allocator, a: []const Line, b: []const Line) ![]DiffAction {
+    return diff(Line, gpa, a, b);
 }
 
 /// Computes the sequence of actions that, when applied to `a`, result in `b`
@@ -176,20 +213,19 @@ pub fn diff_str(gpa: Allocator, a: []const u8, b: []const u8) ![]DiffAction {
 pub fn diff(comptime T: type, gpa: Allocator, a: []const T, b: []const T) ![]DiffAction {
     const equalFn = switch (@typeInfo(T)) {
         .int => struct {
-            fn inner(x: anytype, y: anytype) bool {
+            inline fn inner(x: anytype, y: anytype) bool {
                 return x == y;
             }
         }.inner,
         .@"struct", .@"enum", .@"union" => blk: {
             if (std.meta.hasMethod(T, "equal")) {
                 break :blk struct {
-                    fn inner(x: T, y: T) bool {
+                    inline fn inner(x: T, y: T) bool {
                         return x.equal(y);
                     }
                 }.inner;
-            } else {
-                @compileError("diff: structs, enums, and unions must expose `fn equal(x: T, y: T) bool`");
             }
+            @compileError("diff: " ++ @typeName(T) ++  " does not expose `fn equal(x: T, y: T) bool`");
         },
         .float => @compileError("diff: cannot diff floats, must be Eq"),
         else => @compileError("diff: unsupported type " ++ @typeName(T)),
@@ -304,7 +340,7 @@ fn expectEqualActions(expected: []const DiffAction, actual: []const DiffAction) 
 }
 
 test "diff same" {
-    const actions = try diff_str(std.testing.allocator, "ABCDEF", "ABCDEF");
+    const actions = try diffString(std.testing.allocator, "ABCDEF", "ABCDEF");
     defer std.testing.allocator.free(actions);
 
     const expected = &[_]DiffAction{.{ .traversal = .{ .a_idx = 0, .b_idx = 0, .length = 6 } }};
@@ -331,8 +367,8 @@ test "diff int" {
 test "diff struct" {
     const S = struct {
         x: i32,
-        pub fn order(self: @This(), other: @This()) std.math.Order {
-            return std.math.order(self.x, other.x);
+        pub fn equal(self: @This(), other: @This()) bool {
+            return self.x == other.x;
         }
     };
 
