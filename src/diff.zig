@@ -24,7 +24,6 @@ pub const Line = struct {
     pub fn equal(self: Line, other: Line) bool {
         return std.mem.eql(u8, self.bytes, other.bytes);
     }
-
 };
 
 /// splits given string into `DiffLines`
@@ -225,7 +224,7 @@ pub fn diff(comptime T: type, gpa: Allocator, a: []const T, b: []const T) ![]Dif
                     }
                 }.inner;
             }
-            @compileError("diff: " ++ @typeName(T) ++  " does not expose `fn equal(x: T, y: T) bool`");
+            @compileError("diff: " ++ @typeName(T) ++ " does not expose `fn equal(x: T, y: T) bool`");
         },
         .float => @compileError("diff: cannot diff floats, must be Eq"),
         else => @compileError("diff: unsupported type " ++ @typeName(T)),
