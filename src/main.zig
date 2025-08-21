@@ -79,9 +79,12 @@ pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
 
-    const stderr = std.io.getStdErr().writer();
-    const stdout = std.io.getStdOut().writer();
-    var bw = std.io.bufferedWriter(stdout);
+    var stdout_buf: [512]u8 = undefined;
+
+    var stderr_writer = std.fs.File.stdout().writer(&.{});
+    var stderr = &stderr_writer.interface;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buf);
+    var stdout = &stdout_writer.interface;
     var opts = Options{};
     var args = try std.process.argsWithAllocator(arena.allocator());
     _ = args.next();
@@ -164,7 +167,6 @@ pub fn main() !void {
     const diffs = try zd.diffLines(gpa, a_lines, b_lines);
     defer gpa.free(diffs);
 
-    const writer = bw.writer();
     for (diffs) |diff| {
         const processed = try processDiff(diff, a_lines, b_lines);
 
@@ -172,21 +174,21 @@ pub fn main() !void {
             const offseti32 = @as(i32, @intCast(offset));
 
             if (opts.@"line-numbers") {
-                try writer.writeAll(opts.colors.line_numbers);
+                try stdout.writeAll(opts.colors.line_numbers);
                 if (processed.line_a_start) |a| {
-                    try writer.print("{d:4}", .{@as(u32, @intCast(a + offseti32 + (processed.line_b_start orelse 0)))});
+                    try stdout.print("{d:4}", .{@as(u32, @intCast(a + offseti32 + (processed.line_b_start orelse 0)))});
                 } else {
-                    try writer.writeByteNTimes(' ', 4);
+                    _ = try stdout.splatByte(' ', 4);
                 }
-                try writer.writeByte('|');
+                try stdout.writeByte('|');
                 if (processed.line_b_start) |b| {
-                    try writer.print("{d:4}", .{@as(u32, @intCast(b + offseti32))});
+                    try stdout.print("{d:4}", .{@as(u32, @intCast(b + offseti32))});
                 } else {
-                    try writer.writeByteNTimes(' ', 4);
+                    _ = try stdout.splatByte(' ', 4);
                 }
-                try writer.writeAll(opts.colors.reset);
+                try stdout.writeAll(opts.colors.reset);
 
-                try writer.writeByteNTimes(' ', 2);
+                _ = try stdout.splatByte(' ', 2);
             }
 
             const color, const tag: u8 = switch (processed.action) {
@@ -195,17 +197,19 @@ pub fn main() !void {
                 .deletion => .{ opts.colors.deletion, '-' },
             };
 
-            try writer.print("{s}{c}{s}{s}\n", .{ color, tag, line.bytes, opts.colors.reset });
+            try stdout.print("{s}{c}{s}{s}\n", .{ color, tag, line.bytes, opts.colors.reset });
         }
     }
 
-    try bw.flush();
+    try stdout.flush();
 }
 
 fn getFileOrStdin(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     const max_file_size = 1 << 26;
     if (eql(path, "-")) {
-        return std.io.getStdIn().readToEndAlloc(allocator, max_file_size);
+        var stdin_reader = std.fs.File.stdin().reader(&.{});
+        var stdin = &stdin_reader.interface;
+        return stdin.allocRemaining(allocator, @enumFromInt(max_file_size));
     }
 
     return std.fs.cwd().readFileAlloc(allocator, path, max_file_size);

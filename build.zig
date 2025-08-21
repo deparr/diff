@@ -6,12 +6,12 @@ pub fn build(b: *std.Build) !void {
 
     const lib_mod = b.addModule("zd", .{
         .root_source_file = b.path("src/diff.zig"),
+        .target = target,
+        .optimize = optimize,
     });
 
     const lib_tests = b.addTest(.{
-        .root_source_file = b.path("src/diff.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = lib_mod,
     });
 
     const test_step = b.step("test", "Run tests");

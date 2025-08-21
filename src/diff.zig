@@ -69,7 +69,7 @@ const DiffBuilder = struct {
     }
 
     fn deinit(self: *DiffBuilder) void {
-        self.list.deinit();
+        self.list.deinit(self.allocator);
     }
 
     fn pushTraversal(self: *DiffBuilder, a_idx: usize, b_idx: usize) !void {
@@ -90,7 +90,7 @@ const DiffBuilder = struct {
             else => {},
         };
 
-        try self.list.append(.{
+        try self.list.append(self.allocator, .{
             .traversal = .{
                 .a_idx = a_idx,
                 .b_idx = b_idx,
@@ -116,7 +116,7 @@ const DiffBuilder = struct {
             else => {},
         };
 
-        try self.list.append(.{
+        try self.list.append(self.allocator, .{
             .deletion = .{
                 .a_idx = a_idx,
                 .length = 1,
@@ -141,7 +141,7 @@ const DiffBuilder = struct {
             else => {},
         };
 
-        try self.list.append(.{
+        try self.list.append(self.allocator, .{
             .insertion = .{
                 .b_idx = b_idx,
                 .length = 1,
@@ -329,7 +329,7 @@ pub fn diff(comptime T: type, gpa: Allocator, a: []const T, b: []const T) ![]Dif
     }
 
     std.mem.reverse(DiffAction, builder.list.items);
-    return try builder.list.toOwnedSlice();
+    return try builder.list.toOwnedSlice(gpa);
 }
 
 fn expectEqualActions(expected: []const DiffAction, actual: []const DiffAction) !void {
